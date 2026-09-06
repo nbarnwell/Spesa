@@ -214,8 +214,8 @@ Copy `.env.example` to `.env`:
 
 ```
 VITE_OIDC_CLIENT_ID=...
-VITE_OIDC_REDIRECT_URI=http://localhost:5173/auth/callback
-PORT=5173
+VITE_OIDC_REDIRECT_URI=http://localhost:5174/auth/callback
+PORT=5174
 ```
 
 When the BFF is served from the same origin as the PWA (default Spesa setup), leave `VITE_BFF_BASE_URL` unset — the client calls `/api/*` as relative paths.

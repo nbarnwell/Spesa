@@ -34,8 +34,8 @@ Fill in `.env`:
 
 ```
 VITE_OIDC_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
-VITE_OIDC_REDIRECT_URI=http://localhost:5173/auth/callback
-PORT=5173
+VITE_OIDC_REDIRECT_URI=http://localhost:5174/auth/callback
+PORT=5174
 ```
 
 ### Development
@@ -44,7 +44,7 @@ PORT=5173
 npm run dev
 ```
 
-Runs the BFF server (`server/index.ts` via `tsx watch`), which also serves the Vite dev experience, at `http://localhost:5173`.
+Runs the BFF server (`server/index.ts` via `tsx watch`), which also serves the Vite dev experience, at `http://localhost:5174`.
 
 ### Build & run for production
 
