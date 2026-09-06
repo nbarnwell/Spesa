@@ -1,13 +1,42 @@
 export interface UserProfile {
   sub: string
   email: string
+  emailVerified: boolean
   name?: string
   picture?: string
 }
 
+export type HouseholdRole = 'owner' | 'admin' | 'member'
+
+export interface Household {
+  id: string
+  name: string
+  createdBy: string
+  createdAt: string
+}
+
+export interface HouseholdMember {
+  householdId: string
+  userSub: string
+  role: HouseholdRole
+  joinedAt: string
+}
+
+export type InviteStatus = 'pending' | 'accepted' | 'declined' | 'revoked'
+
+export interface HouseholdInvite {
+  id: string
+  householdId: string
+  email: string
+  invitedBy: string
+  status: InviteStatus
+  createdAt: string
+  resolvedAt: string | null
+}
+
 export interface ProductRow {
   id: string
-  userSub: string
+  householdId: string
   name: string
   category: string | null
   updatedAt: string
@@ -16,7 +45,7 @@ export interface ProductRow {
 
 export interface FavouriteRow {
   id: string
-  userSub: string
+  householdId: string
   productId: string
   sortOrder: number
   updatedAt: string
@@ -25,7 +54,7 @@ export interface FavouriteRow {
 
 export interface ShoppingListRow {
   id: string
-  userSub: string
+  householdId: string
   productId: string
   quantity: string | null
   checked: number
@@ -35,7 +64,7 @@ export interface ShoppingListRow {
 
 export interface StockRow {
   id: string
-  userSub: string
+  householdId: string
   productId: string
   quantity: string | null
   status: 'in_stock' | 'depleted'
@@ -108,6 +137,8 @@ declare global {
   namespace Express {
     interface Request {
       user?: UserProfile
+      householdId?: string
+      householdRole?: HouseholdRole
     }
   }
 }

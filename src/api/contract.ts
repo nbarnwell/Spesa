@@ -2,13 +2,47 @@
  * BFF API contract — implement these endpoints on your backend.
  * All authenticated routes expect: Authorization: Bearer <access_token>
  * (Google OIDC access token or a BFF-issued JWT after token exchange).
+ * Data routes also expect: X-Household-Id: <household id> (defaults to the
+ * caller's first household membership when omitted).
  */
+
+export type HouseholdRole = 'owner' | 'admin' | 'member'
+
+export interface HouseholdSummary {
+  id: string
+  name: string
+  role: HouseholdRole
+  createdBy: string
+  createdAt: string
+}
 
 export interface UserProfile {
   sub: string
   email: string
+  emailVerified: boolean
   name?: string
   picture?: string
+  households: HouseholdSummary[]
+  activeHouseholdId: string
+}
+
+export interface MemberSummary {
+  userSub: string
+  role: HouseholdRole
+  joinedAt: string
+  email: string
+  name: string | null
+}
+
+export interface InviteSummary {
+  id: string
+  householdId: string
+  householdName: string
+  email: string
+  invitedBy: string
+  status: 'pending' | 'accepted' | 'declined' | 'revoked'
+  createdAt: string
+  resolvedAt: string | null
 }
 
 export interface ProductDto {
@@ -74,7 +108,7 @@ export interface SyncPushResponse {
 
 /** Route map for the BFF */
 export const BFF_ROUTES = {
-  /** GET — returns UserProfile from validated OIDC token */
+  /** GET — returns UserProfile (with households + activeHouseholdId) from validated OIDC token */
   me: '/api/me',
 
   /** GET ?since=<iso> — incremental sync pull */
@@ -91,4 +125,16 @@ export const BFF_ROUTES = {
 
   /** POST body: { onlyChecked: boolean } — server-side delivery receive */
   receiveDelivery: '/api/shopping-list/receive-delivery',
+
+  /** GET my households; POST { name, migrateExistingData } to create one */
+  households: '/api/households',
+  household: (id: string) => `/api/households/${id}`,
+  householdMembers: (id: string) => `/api/households/${id}/members`,
+  householdMember: (id: string, userSub: string) => `/api/households/${id}/members/${userSub}`,
+  householdInvites: (id: string) => `/api/households/${id}/invites`,
+
+  /** GET invites pending for my verified email */
+  myInvites: '/api/invites',
+  invite: (inviteId: string) => `/api/invites/${inviteId}`,
+  acceptInvite: (inviteId: string) => `/api/invites/${inviteId}/accept`,
 } as const

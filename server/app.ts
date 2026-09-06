@@ -2,7 +2,9 @@ import express from 'express'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { config } from './config.js'
+import { requireAuth } from './auth/middleware.js'
 import { apiRouter } from './routes/api.js'
+import { householdsRouter } from './routes/households.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const projectRoot = path.resolve(__dirname, '..')
@@ -17,7 +19,7 @@ export function createApp(): express.Express {
     res.json({ ok: true })
   })
 
-  app.use('/api', apiRouter)
+  app.use('/api', requireAuth, apiRouter, householdsRouter)
 
   return app
 }

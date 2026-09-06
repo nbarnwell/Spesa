@@ -17,7 +17,7 @@ function sinceFilter(since: string | undefined): string {
   return since ?? '1970-01-01T00:00:00.000Z'
 }
 
-export function pullSync(userSub: string, since?: string): SyncPullResponse {
+export function pullSync(householdId: string, since?: string): SyncPullResponse {
   const database = getDb()
   const cutoff = sinceFilter(since)
   const serverTime = nowIso()
@@ -26,25 +26,25 @@ export function pullSync(userSub: string, since?: string): SyncPullResponse {
     .prepare(
       `SELECT id, name, category, updated_at AS updatedAt, deleted_at AS deletedAt
        FROM products
-       WHERE user_sub = ? AND updated_at > ? AND deleted_at IS NULL`,
+       WHERE household_id = ? AND updated_at > ? AND deleted_at IS NULL`,
     )
-    .all(userSub, cutoff) as Array<ProductDto & { deletedAt: string | null }>
+    .all(householdId, cutoff) as Array<ProductDto & { deletedAt: string | null }>
 
   const favourites = database
     .prepare(
       `SELECT id, product_id AS productId, sort_order AS sortOrder, updated_at AS updatedAt, deleted_at AS deletedAt
        FROM favourites
-       WHERE user_sub = ? AND updated_at > ? AND deleted_at IS NULL`,
+       WHERE household_id = ? AND updated_at > ? AND deleted_at IS NULL`,
     )
-    .all(userSub, cutoff) as Array<FavouriteDto & { deletedAt: string | null }>
+    .all(householdId, cutoff) as Array<FavouriteDto & { deletedAt: string | null }>
 
   const shoppingList = database
     .prepare(
       `SELECT id, product_id AS productId, quantity, checked, updated_at AS updatedAt, deleted_at AS deletedAt
        FROM shopping_list
-       WHERE user_sub = ? AND updated_at > ? AND deleted_at IS NULL`,
+       WHERE household_id = ? AND updated_at > ? AND deleted_at IS NULL`,
     )
-    .all(userSub, cutoff) as Array<{
+    .all(householdId, cutoff) as Array<{
       id: string
       productId: string
       quantity: string | null
@@ -57,33 +57,33 @@ export function pullSync(userSub: string, since?: string): SyncPullResponse {
     .prepare(
       `SELECT id, product_id AS productId, quantity, status, updated_at AS updatedAt, deleted_at AS deletedAt
        FROM stock
-       WHERE user_sub = ? AND updated_at > ? AND deleted_at IS NULL`,
+       WHERE household_id = ? AND updated_at > ? AND deleted_at IS NULL`,
     )
-    .all(userSub, cutoff) as Array<StockItemDto & { deletedAt: string | null }>
+    .all(householdId, cutoff) as Array<StockItemDto & { deletedAt: string | null }>
 
   const deletedProducts = database
     .prepare(
-      `SELECT id FROM products WHERE user_sub = ? AND deleted_at IS NOT NULL AND deleted_at > ?`,
+      `SELECT id FROM products WHERE household_id = ? AND deleted_at IS NOT NULL AND deleted_at > ?`,
     )
-    .all(userSub, cutoff) as Array<{ id: string }>
+    .all(householdId, cutoff) as Array<{ id: string }>
 
   const deletedFavourites = database
     .prepare(
-      `SELECT id FROM favourites WHERE user_sub = ? AND deleted_at IS NOT NULL AND deleted_at > ?`,
+      `SELECT id FROM favourites WHERE household_id = ? AND deleted_at IS NOT NULL AND deleted_at > ?`,
     )
-    .all(userSub, cutoff) as Array<{ id: string }>
+    .all(householdId, cutoff) as Array<{ id: string }>
 
   const deletedShopping = database
     .prepare(
-      `SELECT id FROM shopping_list WHERE user_sub = ? AND deleted_at IS NOT NULL AND deleted_at > ?`,
+      `SELECT id FROM shopping_list WHERE household_id = ? AND deleted_at IS NOT NULL AND deleted_at > ?`,
     )
-    .all(userSub, cutoff) as Array<{ id: string }>
+    .all(householdId, cutoff) as Array<{ id: string }>
 
   const deletedStock = database
     .prepare(
-      `SELECT id FROM stock WHERE user_sub = ? AND deleted_at IS NOT NULL AND deleted_at > ?`,
+      `SELECT id FROM stock WHERE household_id = ? AND deleted_at IS NOT NULL AND deleted_at > ?`,
     )
-    .all(userSub, cutoff) as Array<{ id: string }>
+    .all(householdId, cutoff) as Array<{ id: string }>
 
   return {
     serverTime,
@@ -115,19 +115,19 @@ export function pullSync(userSub: string, since?: string): SyncPullResponse {
   }
 }
 
-function mergeProduct(userSub: string, dto: ProductDto): boolean {
+function mergeProduct(householdId: string, dto: ProductDto): boolean {
   const database = getDb()
   const existing = database
-    .prepare(`SELECT updated_at AS updatedAt FROM products WHERE id = ? AND user_sub = ?`)
-    .get(dto.id, userSub) as { updatedAt: string } | undefined
+    .prepare(`SELECT updated_at AS updatedAt FROM products WHERE id = ? AND household_id = ?`)
+    .get(dto.id, householdId) as { updatedAt: string } | undefined
 
   if (existing && !isAfter(dto.updatedAt, existing.updatedAt)) return false
 
   database
     .prepare(
-      `INSERT INTO products (id, user_sub, name, category, updated_at, deleted_at)
-       VALUES (@id, @userSub, @name, @category, @updatedAt, NULL)
-       ON CONFLICT(id, user_sub) DO UPDATE SET
+      `INSERT INTO products (id, household_id, name, category, updated_at, deleted_at)
+       VALUES (@id, @householdId, @name, @category, @updatedAt, NULL)
+       ON CONFLICT(id, household_id) DO UPDATE SET
          name = excluded.name,
          category = excluded.category,
          updated_at = excluded.updated_at,
@@ -135,7 +135,7 @@ function mergeProduct(userSub: string, dto: ProductDto): boolean {
     )
     .run({
       id: dto.id,
-      userSub,
+      householdId,
       name: dto.name,
       category: dto.category ?? null,
       updatedAt: dto.updatedAt,
@@ -143,19 +143,19 @@ function mergeProduct(userSub: string, dto: ProductDto): boolean {
   return true
 }
 
-function mergeFavourite(userSub: string, dto: FavouriteDto): boolean {
+function mergeFavourite(householdId: string, dto: FavouriteDto): boolean {
   const database = getDb()
   const existing = database
-    .prepare(`SELECT updated_at AS updatedAt FROM favourites WHERE id = ? AND user_sub = ?`)
-    .get(dto.id, userSub) as { updatedAt: string } | undefined
+    .prepare(`SELECT updated_at AS updatedAt FROM favourites WHERE id = ? AND household_id = ?`)
+    .get(dto.id, householdId) as { updatedAt: string } | undefined
 
   if (existing && !isAfter(dto.updatedAt, existing.updatedAt)) return false
 
   database
     .prepare(
-      `INSERT INTO favourites (id, user_sub, product_id, sort_order, updated_at, deleted_at)
-       VALUES (@id, @userSub, @productId, @sortOrder, @updatedAt, NULL)
-       ON CONFLICT(id, user_sub) DO UPDATE SET
+      `INSERT INTO favourites (id, household_id, product_id, sort_order, updated_at, deleted_at)
+       VALUES (@id, @householdId, @productId, @sortOrder, @updatedAt, NULL)
+       ON CONFLICT(id, household_id) DO UPDATE SET
          product_id = excluded.product_id,
          sort_order = excluded.sort_order,
          updated_at = excluded.updated_at,
@@ -163,7 +163,7 @@ function mergeFavourite(userSub: string, dto: FavouriteDto): boolean {
     )
     .run({
       id: dto.id,
-      userSub,
+      householdId,
       productId: dto.productId,
       sortOrder: dto.sortOrder,
       updatedAt: dto.updatedAt,
@@ -171,19 +171,19 @@ function mergeFavourite(userSub: string, dto: FavouriteDto): boolean {
   return true
 }
 
-function mergeShopping(userSub: string, dto: ShoppingListItemDto): boolean {
+function mergeShopping(householdId: string, dto: ShoppingListItemDto): boolean {
   const database = getDb()
   const existing = database
-    .prepare(`SELECT updated_at AS updatedAt FROM shopping_list WHERE id = ? AND user_sub = ?`)
-    .get(dto.id, userSub) as { updatedAt: string } | undefined
+    .prepare(`SELECT updated_at AS updatedAt FROM shopping_list WHERE id = ? AND household_id = ?`)
+    .get(dto.id, householdId) as { updatedAt: string } | undefined
 
   if (existing && !isAfter(dto.updatedAt, existing.updatedAt)) return false
 
   database
     .prepare(
-      `INSERT INTO shopping_list (id, user_sub, product_id, quantity, checked, updated_at, deleted_at)
-       VALUES (@id, @userSub, @productId, @quantity, @checked, @updatedAt, NULL)
-       ON CONFLICT(id, user_sub) DO UPDATE SET
+      `INSERT INTO shopping_list (id, household_id, product_id, quantity, checked, updated_at, deleted_at)
+       VALUES (@id, @householdId, @productId, @quantity, @checked, @updatedAt, NULL)
+       ON CONFLICT(id, household_id) DO UPDATE SET
          product_id = excluded.product_id,
          quantity = excluded.quantity,
          checked = excluded.checked,
@@ -192,7 +192,7 @@ function mergeShopping(userSub: string, dto: ShoppingListItemDto): boolean {
     )
     .run({
       id: dto.id,
-      userSub,
+      householdId,
       productId: dto.productId,
       quantity: dto.quantity ?? null,
       checked: dto.checked ? 1 : 0,
@@ -201,19 +201,19 @@ function mergeShopping(userSub: string, dto: ShoppingListItemDto): boolean {
   return true
 }
 
-function mergeStock(userSub: string, dto: StockItemDto): boolean {
+function mergeStock(householdId: string, dto: StockItemDto): boolean {
   const database = getDb()
   const existing = database
-    .prepare(`SELECT updated_at AS updatedAt FROM stock WHERE id = ? AND user_sub = ?`)
-    .get(dto.id, userSub) as { updatedAt: string } | undefined
+    .prepare(`SELECT updated_at AS updatedAt FROM stock WHERE id = ? AND household_id = ?`)
+    .get(dto.id, householdId) as { updatedAt: string } | undefined
 
   if (existing && !isAfter(dto.updatedAt, existing.updatedAt)) return false
 
   database
     .prepare(
-      `INSERT INTO stock (id, user_sub, product_id, quantity, status, updated_at, deleted_at)
-       VALUES (@id, @userSub, @productId, @quantity, @status, @updatedAt, NULL)
-       ON CONFLICT(id, user_sub) DO UPDATE SET
+      `INSERT INTO stock (id, household_id, product_id, quantity, status, updated_at, deleted_at)
+       VALUES (@id, @householdId, @productId, @quantity, @status, @updatedAt, NULL)
+       ON CONFLICT(id, household_id) DO UPDATE SET
          product_id = excluded.product_id,
          quantity = excluded.quantity,
          status = excluded.status,
@@ -222,7 +222,7 @@ function mergeStock(userSub: string, dto: StockItemDto): boolean {
     )
     .run({
       id: dto.id,
-      userSub,
+      householdId,
       productId: dto.productId,
       quantity: dto.quantity ?? null,
       status: dto.status,
@@ -231,51 +231,51 @@ function mergeStock(userSub: string, dto: StockItemDto): boolean {
   return true
 }
 
-export function pushSync(userSub: string, body: SyncPushRequest): SyncPushResponse {
+export function pushSync(householdId: string, body: SyncPushRequest): SyncPushResponse {
   const conflicts: SyncPushResponse['conflicts'] = []
   const database = getDb()
 
   const run = database.transaction(() => {
     for (const product of body.products) {
-      if (!mergeProduct(userSub, product)) {
+      if (!mergeProduct(householdId, product)) {
         const server = database
           .prepare(
-            `SELECT id, name, category, updated_at AS updatedAt FROM products WHERE id = ? AND user_sub = ?`,
+            `SELECT id, name, category, updated_at AS updatedAt FROM products WHERE id = ? AND household_id = ?`,
           )
-          .get(product.id, userSub)
+          .get(product.id, householdId)
         conflicts.push({ entity: 'product', id: product.id, serverVersion: server })
       }
     }
     for (const favourite of body.favourites) {
-      if (!mergeFavourite(userSub, favourite)) {
+      if (!mergeFavourite(householdId, favourite)) {
         const server = database
           .prepare(
             `SELECT id, product_id AS productId, sort_order AS sortOrder, updated_at AS updatedAt
-             FROM favourites WHERE id = ? AND user_sub = ?`,
+             FROM favourites WHERE id = ? AND household_id = ?`,
           )
-          .get(favourite.id, userSub)
+          .get(favourite.id, householdId)
         conflicts.push({ entity: 'favourite', id: favourite.id, serverVersion: server })
       }
     }
     for (const item of body.shoppingList) {
-      if (!mergeShopping(userSub, item)) {
+      if (!mergeShopping(householdId, item)) {
         const server = database
           .prepare(
             `SELECT id, product_id AS productId, quantity, checked, updated_at AS updatedAt
-             FROM shopping_list WHERE id = ? AND user_sub = ?`,
+             FROM shopping_list WHERE id = ? AND household_id = ?`,
           )
-          .get(item.id, userSub)
+          .get(item.id, householdId)
         conflicts.push({ entity: 'shoppingList', id: item.id, serverVersion: server })
       }
     }
     for (const item of body.stock) {
-      if (!mergeStock(userSub, item)) {
+      if (!mergeStock(householdId, item)) {
         const server = database
           .prepare(
             `SELECT id, product_id AS productId, quantity, status, updated_at AS updatedAt
-             FROM stock WHERE id = ? AND user_sub = ?`,
+             FROM stock WHERE id = ? AND household_id = ?`,
           )
-          .get(item.id, userSub)
+          .get(item.id, householdId)
         conflicts.push({ entity: 'stock', id: item.id, serverVersion: server })
       }
     }
@@ -288,7 +288,7 @@ export function pushSync(userSub: string, body: SyncPushRequest): SyncPushRespon
 
 export function softDelete(
   table: 'products' | 'favourites' | 'shopping_list' | 'stock',
-  userSub: string,
+  householdId: string,
   id: string,
 ): boolean {
   const database = getDb()
@@ -297,14 +297,14 @@ export function softDelete(
     .prepare(
       `UPDATE ${table}
        SET deleted_at = @ts, updated_at = @ts
-       WHERE id = @id AND user_sub = @userSub AND deleted_at IS NULL`,
+       WHERE id = @id AND household_id = @householdId AND deleted_at IS NULL`,
     )
-    .run({ id, userSub, ts })
+    .run({ id, householdId, ts })
   return result.changes > 0
 }
 
 export function receiveDelivery(
-  userSub: string,
+  householdId: string,
   onlyChecked: boolean,
 ): number {
   const database = getDb()
@@ -316,38 +316,38 @@ export function receiveDelivery(
       .prepare(
         `SELECT id, product_id AS productId, quantity
          FROM shopping_list
-         WHERE user_sub = ? AND deleted_at IS NULL ${onlyChecked ? 'AND checked = 1' : ''}`,
+         WHERE household_id = ? AND deleted_at IS NULL ${onlyChecked ? 'AND checked = 1' : ''}`,
       )
-      .all(userSub) as Array<{ id: string; productId: string; quantity: string | null }>
+      .all(householdId) as Array<{ id: string; productId: string; quantity: string | null }>
 
     for (const item of items) {
       const existingStock = database
         .prepare(
           `SELECT id FROM stock
-           WHERE user_sub = ? AND product_id = ? AND status = 'in_stock' AND deleted_at IS NULL`,
+           WHERE household_id = ? AND product_id = ? AND status = 'in_stock' AND deleted_at IS NULL`,
         )
-        .get(userSub, item.productId) as { id: string } | undefined
+        .get(householdId, item.productId) as { id: string } | undefined
 
       if (existingStock) {
         database
           .prepare(
-            `UPDATE stock SET quantity = @quantity, updated_at = @ts WHERE id = @id AND user_sub = @userSub`,
+            `UPDATE stock SET quantity = @quantity, updated_at = @ts WHERE id = @id AND household_id = @householdId`,
           )
           .run({
             id: existingStock.id,
-            userSub,
+            householdId,
             quantity: item.quantity,
             ts,
           })
       } else {
         database
           .prepare(
-            `INSERT INTO stock (id, user_sub, product_id, quantity, status, updated_at, deleted_at)
-             VALUES (@id, @userSub, @productId, @quantity, 'in_stock', @ts, NULL)`,
+            `INSERT INTO stock (id, household_id, product_id, quantity, status, updated_at, deleted_at)
+             VALUES (@id, @householdId, @productId, @quantity, 'in_stock', @ts, NULL)`,
           )
           .run({
             id: crypto.randomUUID(),
-            userSub,
+            householdId,
             productId: item.productId,
             quantity: item.quantity,
             ts,
@@ -356,9 +356,9 @@ export function receiveDelivery(
 
       database
         .prepare(
-          `UPDATE shopping_list SET deleted_at = @ts, updated_at = @ts WHERE id = @id AND user_sub = @userSub`,
+          `UPDATE shopping_list SET deleted_at = @ts, updated_at = @ts WHERE id = @id AND household_id = @householdId`,
         )
-        .run({ id: item.id, userSub, ts })
+        .run({ id: item.id, householdId, ts })
       moved += 1
     }
   })

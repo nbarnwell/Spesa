@@ -61,6 +61,14 @@ npm start
 npm run lint
 ```
 
+### Test
+
+```bash
+npm test
+```
+
+Runs the server-side test suite (`vitest`): the household migration, the request-pipeline authorization boundary, and the household/invite endpoints.
+
 ## Project structure
 
 ```
@@ -72,6 +80,17 @@ public/         Static assets (icons, favicon)
 
 See [`docs/BFF-API.md`](docs/BFF-API.md) for the full API contract, sync protocol, and data model.
 
+## Households
+
+Every user always belongs to at least one household — a personal one is created automatically on first sign-in. All data (shopping list, stock, favourites, products) is scoped to the active household, not to an individual user, so a household can be shared with other people: invite by email, they accept next time they sign in, and everyone in the household sees the same list.
+
+- **Invites require acceptance** — adding an email creates a pending invite, matched to that person on their next sign-in by verified email. Invites are pulled in-app, not emailed.
+- **Roles:** the creator is the owner; the owner can promote members to admin. Owners and admins can invite and remove members. All members have equal access to list/stock/favourites data.
+- **Switching households** works offline — all of a signed-in user's households are cached locally.
+- Reachable from the household switcher in the header once signed in.
+
 ## How sync works
 
-The client is fully functional offline against its local IndexedDB store. When signed in and online, it syncs with the BFF using a last-write-wins merge on `updatedAt`: `GET /api/sync?since=<iso8601>` pulls remote changes, `POST /api/sync` pushes local changes. See the docs for the full protocol and entity model (`Product`, `Favourite`, `ShoppingListItem`, `StockItem`).
+The client is fully functional offline against its local IndexedDB store. When signed in and online, it syncs with the BFF using a last-write-wins merge on `updatedAt`, scoped to the active household (sent as an `X-Household-Id` header): `GET /api/sync?since=<iso8601>` pulls remote changes, `POST /api/sync` pushes local changes. The client also polls periodically and re-syncs when the tab regains focus, so changes from other household members show up without a manual refresh. See the docs for the full protocol, the household/invite endpoints, and the entity model (`Product`, `Favourite`, `ShoppingListItem`, `StockItem`).
+
+Last-write-wins now applies across everyone in a household: ticking an item off is idempotent so concurrent taps are safe, but two people editing the same item's quantity at the same moment will silently lose one side.

@@ -1,6 +1,11 @@
 import { useAuth } from '../auth/AuthProvider'
+import { HouseholdSwitcher } from './HouseholdSwitcher'
 
-export function Header() {
+interface HeaderProps {
+  onManageHousehold: () => void
+}
+
+export function Header({ onManageHousehold }: HeaderProps) {
   const { user, isConfigured, signIn, signOut, isLoading } = useAuth()
 
   return (
@@ -15,9 +20,12 @@ export function Header() {
         {isLoading ? (
           <span className="header__muted">…</span>
         ) : user ? (
-          <button type="button" className="btn btn--ghost btn--sm" onClick={() => void signOut()}>
-            Sign out
-          </button>
+          <>
+            <HouseholdSwitcher onManage={onManageHousehold} />
+            <button type="button" className="btn btn--ghost btn--sm" onClick={() => void signOut()}>
+              Sign out
+            </button>
+          </>
         ) : isConfigured ? (
           <button type="button" className="btn btn--ghost btn--sm" onClick={() => void signIn()}>
             Sign in

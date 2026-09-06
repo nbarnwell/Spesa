@@ -80,6 +80,86 @@ body {
   font-size: 0.875rem;
 }
 
+.header__auth {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.household-switcher {
+  position: relative;
+}
+
+.household-switcher__trigger {
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  color: #fff;
+  border-radius: var(--radius);
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 0.85rem;
+  cursor: pointer;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.household-switcher__menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  background: var(--surface);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  min-width: 200px;
+  padding: 6px;
+  display: flex;
+  flex-direction: column;
+  z-index: 30;
+}
+
+.household-switcher__item {
+  text-align: left;
+  padding: 8px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 8px;
+  font: inherit;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.household-switcher__item:hover {
+  background: var(--bg);
+}
+
+.household-switcher__item--active {
+  font-weight: 600;
+  color: var(--primary);
+}
+
+.household-switcher__divider {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 0;
+}
+
+.invite-prompt__checkbox {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 16px 0;
+  font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.item-row__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .app__main {
   flex: 1;
   padding: 16px 16px calc(var(--nav-height) + var(--safe-bottom) + 16px);

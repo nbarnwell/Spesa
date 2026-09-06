@@ -1,7 +1,10 @@
 import { useState } from 'react'
 import { AuthProvider } from './auth/AuthProvider'
+import { HouseholdProvider } from './household/HouseholdProvider'
 import { Header } from './components/Header'
 import { TabNav } from './components/TabNav'
+import { InvitePrompt } from './components/InvitePrompt'
+import { HouseholdSettingsPage } from './pages/HouseholdSettingsPage'
 import { FavouritesPage } from './pages/FavouritesPage'
 import { ShoppingPage } from './pages/ShoppingPage'
 import { StockPage } from './pages/StockPage'
@@ -10,16 +13,24 @@ import './app.css'
 
 function AppShell() {
   const [tab, setTab] = useState<TabId>('shop')
+  const [showSettings, setShowSettings] = useState(false)
 
   return (
     <div className="app">
-      <Header />
+      <Header onManageHousehold={() => setShowSettings(true)} />
       <main className="app__main">
-        {tab === 'shop' && <ShoppingPage />}
-        {tab === 'stock' && <StockPage />}
-        {tab === 'favourites' && <FavouritesPage />}
+        {showSettings ? (
+          <HouseholdSettingsPage onClose={() => setShowSettings(false)} />
+        ) : (
+          <>
+            {tab === 'shop' && <ShoppingPage />}
+            {tab === 'stock' && <StockPage />}
+            {tab === 'favourites' && <FavouritesPage />}
+          </>
+        )}
       </main>
-      <TabNav active={tab} onChange={setTab} />
+      {!showSettings && <TabNav active={tab} onChange={setTab} />}
+      <InvitePrompt />
     </div>
   )
 }
@@ -27,7 +38,9 @@ function AppShell() {
 export default function App() {
   return (
     <AuthProvider>
-      <AppShell />
+      <HouseholdProvider>
+        <AppShell />
+      </HouseholdProvider>
     </AuthProvider>
   )
 }

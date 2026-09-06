@@ -4,6 +4,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from 'react'
@@ -11,6 +12,9 @@ import type { User } from 'oidc-client-ts'
 import { completeSignIn, isOidcConfigured, signIn, signOut, userManager } from './oidc'
 import { fullSync } from '../api/sync'
 import { subscribeDataChanged } from '../hooks/useAsyncData'
+
+const POLL_INTERVAL_MS = 20_000
+const DEBOUNCE_MS = 1_500
 
 interface AuthContextValue {
   user: User | null
@@ -27,6 +31,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const configured = isOidcConfigured()
+  const userRef = useRef<User | null>(null)
+  const syncInFlightRef = useRef(false)
+
+  useEffect(() => {
+    userRef.current = user
+  }, [user])
 
   const syncAfterLogin = useCallback(async (u: User) => {
     if (!u.access_token) return
@@ -87,18 +97,42 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!user?.access_token || user.expired) return
 
-    let timer: ReturnType<typeof setTimeout> | undefined
+    const runSync = () => {
+      // Read the ref, not the closed-over `user`, so a token refreshed via
+      // automaticSilentRenew doesn't leave the interval/visibility handlers
+      // syncing with a stale (possibly expired) access token.
+      const current = userRef.current
+      if (!current?.access_token || current.expired) return
+      if (document.hidden || !navigator.onLine) return
+      if (syncInFlightRef.current) return
+
+      syncInFlightRef.current = true
+      void fullSync(current.access_token)
+        .catch(() => {})
+        .finally(() => {
+          syncInFlightRef.current = false
+        })
+    }
+
+    let debounceTimer: ReturnType<typeof setTimeout> | undefined
     const scheduleSync = () => {
-      if (timer) clearTimeout(timer)
-      timer = setTimeout(() => {
-        void fullSync(user.access_token).catch(() => {})
-      }, 1500)
+      if (debounceTimer) clearTimeout(debounceTimer)
+      debounceTimer = setTimeout(runSync, DEBOUNCE_MS)
     }
 
     const unsubscribe = subscribeDataChanged(scheduleSync)
+    const pollInterval = setInterval(runSync, POLL_INTERVAL_MS)
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) runSync()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+
     return () => {
       unsubscribe()
-      if (timer) clearTimeout(timer)
+      if (debounceTimer) clearTimeout(debounceTimer)
+      clearInterval(pollInterval)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [user])
 

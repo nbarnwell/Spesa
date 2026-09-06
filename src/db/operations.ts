@@ -1,6 +1,7 @@
 import { db } from './database'
 import type { Product, Favourite, ShoppingListItem, StockItem } from '../types'
 import { newId, normalizeProductName, nowIso } from '../lib/ids'
+import { getActiveHouseholdId } from '../household/activeHousehold'
 
 export type ProductWithRefs = Product & {
   favourite?: Favourite
@@ -10,7 +11,7 @@ export type ProductWithRefs = Product & {
 
 async function findProductByName(name: string): Promise<Product | undefined> {
   const normalized = normalizeProductName(name).toLowerCase()
-  const all = await db.products.toArray()
+  const all = await db.products.where('householdId').equals(getActiveHouseholdId()).toArray()
   return all.find((p) => p.name.toLowerCase() === normalized)
 }
 
@@ -23,6 +24,7 @@ export async function getOrCreateProduct(name: string, category?: string): Promi
 
   const product: Product = {
     id: newId(),
+    householdId: getActiveHouseholdId(),
     name: trimmed,
     category,
     updatedAt: nowIso(),
@@ -33,12 +35,16 @@ export async function getOrCreateProduct(name: string, category?: string): Promi
 }
 
 export async function listProducts(): Promise<Product[]> {
-  return db.products.orderBy('name').toArray()
+  return db.products.where('householdId').equals(getActiveHouseholdId()).sortBy('name')
 }
 
 export async function listFavourites(): Promise<Array<Favourite & { product: Product }>> {
-  const favourites = await db.favourites.orderBy('sortOrder').toArray()
-  const products = await db.products.toArray()
+  const householdId = getActiveHouseholdId()
+  const favourites = await db.favourites
+    .where('householdId')
+    .equals(householdId)
+    .sortBy('sortOrder')
+  const products = await db.products.where('householdId').equals(householdId).toArray()
   const byId = new Map(products.map((p) => [p.id, p]))
 
   return favourites
@@ -50,12 +56,23 @@ export async function listFavourites(): Promise<Array<Favourite & { product: Pro
 }
 
 export async function addFavourite(productId: string): Promise<Favourite> {
-  const existing = await db.favourites.where('productId').equals(productId).first()
+  const householdId = getActiveHouseholdId()
+  const existing = await db.favourites
+    .where('householdId')
+    .equals(householdId)
+    .filter((f) => f.productId === productId)
+    .first()
   if (existing) return existing
 
-  const maxOrder = (await db.favourites.orderBy('sortOrder').last())?.sortOrder ?? -1
+  const householdFavourites = await db.favourites
+    .where('householdId')
+    .equals(householdId)
+    .sortBy('sortOrder')
+  const maxOrder = householdFavourites.at(-1)?.sortOrder ?? -1
+
   const favourite: Favourite = {
     id: newId(),
+    householdId,
     productId,
     sortOrder: maxOrder + 1,
     updatedAt: nowIso(),
@@ -70,8 +87,11 @@ export async function removeFavourite(favouriteId: string): Promise<void> {
 }
 
 export async function listShoppingItems(): Promise<Array<ShoppingListItem & { product: Product }>> {
-  const items = await db.shoppingList.orderBy('updatedAt').reverse().toArray()
-  const products = await db.products.toArray()
+  const householdId = getActiveHouseholdId()
+  const items = (
+    await db.shoppingList.where('householdId').equals(householdId).sortBy('updatedAt')
+  ).reverse()
+  const products = await db.products.where('householdId').equals(householdId).toArray()
   const byId = new Map(products.map((p) => [p.id, p]))
 
   return items
@@ -86,7 +106,12 @@ export async function addToShoppingList(
   productId: string,
   quantity?: string,
 ): Promise<ShoppingListItem> {
-  const existing = await db.shoppingList.where('productId').equals(productId).first()
+  const householdId = getActiveHouseholdId()
+  const existing = await db.shoppingList
+    .where('[householdId+productId]')
+    .equals([householdId, productId])
+    .first()
+
   if (existing) {
     const updated: ShoppingListItem = {
       ...existing,
@@ -101,6 +126,7 @@ export async function addToShoppingList(
 
   const item: ShoppingListItem = {
     id: newId(),
+    householdId,
     productId,
     quantity,
     checked: false,
@@ -127,13 +153,19 @@ export async function removeShoppingItem(itemId: string): Promise<void> {
 }
 
 export async function clearCheckedShoppingItems(): Promise<void> {
-  const checked = await db.shoppingList.filter((i) => i.checked).toArray()
+  const householdId = getActiveHouseholdId()
+  const checked = await db.shoppingList
+    .where('householdId')
+    .equals(householdId)
+    .filter((i) => i.checked)
+    .toArray()
   await db.shoppingList.bulkDelete(checked.map((i) => i.id))
 }
 
 export async function listStock(): Promise<Array<StockItem & { product: Product }>> {
-  const items = await db.stock.toArray()
-  const products = await db.products.toArray()
+  const householdId = getActiveHouseholdId()
+  const items = await db.stock.where('householdId').equals(householdId).toArray()
+  const products = await db.products.where('householdId').equals(householdId).toArray()
   const byId = new Map(products.map((p) => [p.id, p]))
 
   return items
@@ -150,9 +182,10 @@ export async function addToStock(
   productId: string,
   quantity?: string,
 ): Promise<StockItem> {
+  const householdId = getActiveHouseholdId()
   const existing = await db.stock
-    .where('productId')
-    .equals(productId)
+    .where('[householdId+productId]')
+    .equals([householdId, productId])
     .filter((s) => s.status === 'in_stock')
     .first()
 
@@ -169,6 +202,7 @@ export async function addToStock(
 
   const item: StockItem = {
     id: newId(),
+    householdId,
     productId,
     quantity,
     status: 'in_stock',
@@ -181,7 +215,8 @@ export async function addToStock(
 
 /** Move shopping list items (checked only, or all) into stock and remove from list. */
 export async function receiveDelivery(options: { onlyChecked: boolean }): Promise<number> {
-  const items = await db.shoppingList.toArray()
+  const householdId = getActiveHouseholdId()
+  const items = await db.shoppingList.where('householdId').equals(householdId).toArray()
   const toReceive = options.onlyChecked ? items.filter((i) => i.checked) : items
   if (toReceive.length === 0) return 0
 
@@ -207,19 +242,29 @@ export async function markStockDepleted(stockId: string): Promise<StockItem | un
 }
 
 export async function isFavourite(productId: string): Promise<boolean> {
-  const fav = await db.favourites.where('productId').equals(productId).first()
+  const householdId = getActiveHouseholdId()
+  const fav = await db.favourites
+    .where('householdId')
+    .equals(householdId)
+    .filter((f) => f.productId === productId)
+    .first()
   return !!fav
 }
 
 export async function isOnShoppingList(productId: string): Promise<boolean> {
-  const item = await db.shoppingList.where('productId').equals(productId).first()
+  const householdId = getActiveHouseholdId()
+  const item = await db.shoppingList
+    .where('[householdId+productId]')
+    .equals([householdId, productId])
+    .first()
   return !!item
 }
 
 export async function isInStock(productId: string): Promise<boolean> {
+  const householdId = getActiveHouseholdId()
   const item = await db.stock
-    .where('productId')
-    .equals(productId)
+    .where('[householdId+productId]')
+    .equals([householdId, productId])
     .filter((s) => s.status === 'in_stock')
     .first()
   return !!item
