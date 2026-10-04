@@ -1,4 +1,4 @@
-import { getDb, nowIso } from '../db/index.js'
+import { getPool, nowIso, withTransaction, type Queryable } from '../db/index.js'
 import type { HouseholdRole, InviteStatus } from '../types.js'
 
 export interface HouseholdSummary {
@@ -28,219 +28,264 @@ export interface InviteSummary {
   resolvedAt: string | null
 }
 
-export function getMembership(
+const INVITE_COLUMNS = `i.id, i.household_id AS "householdId", h.name AS "householdName", i.email,
+              i.invited_by AS "invitedBy", i.status, i.created_at AS "createdAt", i.resolved_at AS "resolvedAt"`
+
+/** Runs `fn` on the caller's transaction if one was passed, otherwise opens its own. */
+async function inTransaction<T>(
+  db: Queryable | undefined,
+  fn: (tx: Queryable) => Promise<T>,
+): Promise<T> {
+  return db ? fn(db) : withTransaction(fn)
+}
+
+export async function getMembership(
   householdId: string,
   userSub: string,
-): { role: HouseholdRole } | undefined {
-  const database = getDb()
-  return database
-    .prepare(`SELECT role FROM household_members WHERE household_id = ? AND user_sub = ?`)
-    .get(householdId, userSub) as { role: HouseholdRole } | undefined
+  db: Queryable = getPool(),
+): Promise<{ role: HouseholdRole } | undefined> {
+  const { rows } = await db.query<{ role: HouseholdRole }>(
+    `SELECT role FROM household_members WHERE household_id = $1 AND user_sub = $2`,
+    [householdId, userSub],
+  )
+  return rows[0]
 }
 
-export function getDefaultHouseholdId(userSub: string): string | undefined {
-  const database = getDb()
-  const row = database
-    .prepare(
-      `SELECT household_id AS householdId FROM household_members
-       WHERE user_sub = ? ORDER BY joined_at ASC LIMIT 1`,
-    )
-    .get(userSub) as { householdId: string } | undefined
-  return row?.householdId
+export async function getDefaultHouseholdId(
+  userSub: string,
+  db: Queryable = getPool(),
+): Promise<string | undefined> {
+  const { rows } = await db.query<{ householdId: string }>(
+    `SELECT household_id AS "householdId" FROM household_members
+     WHERE user_sub = $1 ORDER BY joined_at ASC LIMIT 1`,
+    [userSub],
+  )
+  return rows[0]?.householdId
 }
 
-export function listHouseholdsForUser(userSub: string): HouseholdSummary[] {
-  const database = getDb()
-  return database
-    .prepare(
-      `SELECT h.id, h.name, h.created_by AS createdBy, h.created_at AS createdAt, hm.role
-       FROM household_members hm
-       JOIN households h ON h.id = hm.household_id
-       WHERE hm.user_sub = ?
-       ORDER BY hm.joined_at ASC`,
-    )
-    .all(userSub) as HouseholdSummary[]
+export async function listHouseholdsForUser(
+  userSub: string,
+  db: Queryable = getPool(),
+): Promise<HouseholdSummary[]> {
+  const { rows } = await db.query<HouseholdSummary>(
+    `SELECT h.id, h.name, h.created_by AS "createdBy", h.created_at AS "createdAt", hm.role
+     FROM household_members hm
+     JOIN households h ON h.id = hm.household_id
+     WHERE hm.user_sub = $1
+     ORDER BY hm.joined_at ASC`,
+    [userSub],
+  )
+  return rows
 }
 
-export function countHouseholdsForUser(userSub: string): number {
-  const database = getDb()
-  const row = database
-    .prepare(`SELECT COUNT(*) AS n FROM household_members WHERE user_sub = ?`)
-    .get(userSub) as { n: number }
-  return row.n
+export async function countHouseholdsForUser(
+  userSub: string,
+  db: Queryable = getPool(),
+): Promise<number> {
+  const { rows } = await db.query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM household_members WHERE user_sub = $1`,
+    [userSub],
+  )
+  return rows[0].n
 }
 
-export function countMembers(householdId: string): number {
-  const database = getDb()
-  const row = database
-    .prepare(`SELECT COUNT(*) AS n FROM household_members WHERE household_id = ?`)
-    .get(householdId) as { n: number }
-  return row.n
+export async function countMembers(
+  householdId: string,
+  db: Queryable = getPool(),
+): Promise<number> {
+  const { rows } = await db.query<{ n: number }>(
+    `SELECT COUNT(*)::int AS n FROM household_members WHERE household_id = $1`,
+    [householdId],
+  )
+  return rows[0].n
 }
 
-export function createHousehold(name: string, ownerSub: string): HouseholdSummary {
-  const database = getDb()
+export async function createHousehold(
+  name: string,
+  ownerSub: string,
+  db?: Queryable,
+): Promise<HouseholdSummary> {
   const id = crypto.randomUUID()
   const ts = nowIso()
 
-  const run = database.transaction(() => {
-    database
-      .prepare(`INSERT INTO households (id, name, created_by, created_at) VALUES (?, ?, ?, ?)`)
-      .run(id, name, ownerSub, ts)
-    database
-      .prepare(
-        `INSERT INTO household_members (household_id, user_sub, role, joined_at)
-         VALUES (?, ?, 'owner', ?)`,
-      )
-      .run(id, ownerSub, ts)
+  await inTransaction(db, async (tx) => {
+    await tx.query(
+      `INSERT INTO households (id, name, created_by, created_at) VALUES ($1, $2, $3, $4)`,
+      [id, name, ownerSub, ts],
+    )
+    await tx.query(
+      `INSERT INTO household_members (household_id, user_sub, role, joined_at)
+       VALUES ($1, $2, 'owner', $3)`,
+      [id, ownerSub, ts],
+    )
   })
-  run()
 
   return { id, name, role: 'owner', createdBy: ownerSub, createdAt: ts }
 }
 
-export function renameHousehold(householdId: string, name: string): void {
-  const database = getDb()
-  database.prepare(`UPDATE households SET name = ? WHERE id = ?`).run(name, householdId)
+export async function renameHousehold(
+  householdId: string,
+  name: string,
+  db: Queryable = getPool(),
+): Promise<void> {
+  await db.query(`UPDATE households SET name = $1 WHERE id = $2`, [name, householdId])
 }
 
 const DATA_TABLES = ['products', 'favourites', 'shopping_list', 'stock'] as const
 
-export function deleteHousehold(householdId: string): void {
-  const database = getDb()
-  const run = database.transaction(() => {
+export async function deleteHousehold(householdId: string, db?: Queryable): Promise<void> {
+  await inTransaction(db, async (tx) => {
     for (const table of DATA_TABLES) {
-      database.prepare(`DELETE FROM ${table} WHERE household_id = ?`).run(householdId)
+      await tx.query(`DELETE FROM ${table} WHERE household_id = $1`, [householdId])
     }
-    database.prepare(`DELETE FROM household_invites WHERE household_id = ?`).run(householdId)
-    database.prepare(`DELETE FROM household_members WHERE household_id = ?`).run(householdId)
-    database.prepare(`DELETE FROM households WHERE id = ?`).run(householdId)
+    await tx.query(`DELETE FROM household_invites WHERE household_id = $1`, [householdId])
+    await tx.query(`DELETE FROM household_members WHERE household_id = $1`, [householdId])
+    await tx.query(`DELETE FROM households WHERE id = $1`, [householdId])
   })
-  run()
 }
 
-export function listMembers(householdId: string): MemberSummary[] {
-  const database = getDb()
-  return database
-    .prepare(
-      `SELECT hm.user_sub AS userSub, hm.role, hm.joined_at AS joinedAt, u.email, u.name
-       FROM household_members hm
-       JOIN users u ON u.sub = hm.user_sub
-       WHERE hm.household_id = ?
-       ORDER BY hm.joined_at ASC`,
-    )
-    .all(householdId) as MemberSummary[]
+export async function listMembers(
+  householdId: string,
+  db: Queryable = getPool(),
+): Promise<MemberSummary[]> {
+  const { rows } = await db.query<MemberSummary>(
+    `SELECT hm.user_sub AS "userSub", hm.role, hm.joined_at AS "joinedAt", u.email, u.name
+     FROM household_members hm
+     JOIN users u ON u.sub = hm.user_sub
+     WHERE hm.household_id = $1
+     ORDER BY hm.joined_at ASC`,
+    [householdId],
+  )
+  return rows
 }
 
-export function setMemberRole(householdId: string, userSub: string, role: HouseholdRole): void {
-  const database = getDb()
-  database
-    .prepare(`UPDATE household_members SET role = ? WHERE household_id = ? AND user_sub = ?`)
-    .run(role, householdId, userSub)
+export async function setMemberRole(
+  householdId: string,
+  userSub: string,
+  role: HouseholdRole,
+  db: Queryable = getPool(),
+): Promise<void> {
+  await db.query(
+    `UPDATE household_members SET role = $1 WHERE household_id = $2 AND user_sub = $3`,
+    [role, householdId, userSub],
+  )
 }
 
-export function removeMember(householdId: string, userSub: string): void {
-  const database = getDb()
-  database
-    .prepare(`DELETE FROM household_members WHERE household_id = ? AND user_sub = ?`)
-    .run(householdId, userSub)
+export async function removeMember(
+  householdId: string,
+  userSub: string,
+  db: Queryable = getPool(),
+): Promise<void> {
+  await db.query(`DELETE FROM household_members WHERE household_id = $1 AND user_sub = $2`, [
+    householdId,
+    userSub,
+  ])
 }
 
-export function listInvitesForHousehold(householdId: string): InviteSummary[] {
-  const database = getDb()
-  return database
-    .prepare(
-      `SELECT i.id, i.household_id AS householdId, h.name AS householdName, i.email,
-              i.invited_by AS invitedBy, i.status, i.created_at AS createdAt, i.resolved_at AS resolvedAt
-       FROM household_invites i
-       JOIN households h ON h.id = i.household_id
-       WHERE i.household_id = ? AND i.status = 'pending'
-       ORDER BY i.created_at ASC`,
-    )
-    .all(householdId) as InviteSummary[]
+export async function listInvitesForHousehold(
+  householdId: string,
+  db: Queryable = getPool(),
+): Promise<InviteSummary[]> {
+  const { rows } = await db.query<InviteSummary>(
+    `SELECT ${INVITE_COLUMNS}
+     FROM household_invites i
+     JOIN households h ON h.id = i.household_id
+     WHERE i.household_id = $1 AND i.status = 'pending'
+     ORDER BY i.created_at ASC`,
+    [householdId],
+  )
+  return rows
 }
 
-export function findPendingInvite(inviteId: string): InviteSummary | undefined {
-  const database = getDb()
-  return database
-    .prepare(
-      `SELECT i.id, i.household_id AS householdId, h.name AS householdName, i.email,
-              i.invited_by AS invitedBy, i.status, i.created_at AS createdAt, i.resolved_at AS resolvedAt
-       FROM household_invites i
-       JOIN households h ON h.id = i.household_id
-       WHERE i.id = ?`,
-    )
-    .get(inviteId) as InviteSummary | undefined
+export async function findPendingInvite(
+  inviteId: string,
+  db: Queryable = getPool(),
+): Promise<InviteSummary | undefined> {
+  const { rows } = await db.query<InviteSummary>(
+    `SELECT ${INVITE_COLUMNS}
+     FROM household_invites i
+     JOIN households h ON h.id = i.household_id
+     WHERE i.id = $1`,
+    [inviteId],
+  )
+  return rows[0]
 }
 
 /** Returns true if created, false if a pending invite for this household/email already exists. */
-export function createInvite(householdId: string, email: string, invitedBy: string): boolean {
-  const database = getDb()
-  const existing = database
-    .prepare(
-      `SELECT 1 FROM household_invites WHERE household_id = ? AND email = ? AND status = 'pending'`,
-    )
-    .get(householdId, email)
-  if (existing) return false
-
-  database
-    .prepare(
-      `INSERT INTO household_invites (id, household_id, email, invited_by, status, created_at, resolved_at)
-       VALUES (?, ?, ?, ?, 'pending', ?, NULL)`,
-    )
-    .run(crypto.randomUUID(), householdId, email, invitedBy, nowIso())
-  return true
+export async function createInvite(
+  householdId: string,
+  email: string,
+  invitedBy: string,
+  db: Queryable = getPool(),
+): Promise<boolean> {
+  const result = await db.query(
+    `INSERT INTO household_invites (id, household_id, email, invited_by, status, created_at, resolved_at)
+     VALUES ($1, $2, $3, $4, 'pending', $5, NULL)
+     ON CONFLICT (household_id, email) WHERE status = 'pending' DO NOTHING`,
+    [crypto.randomUUID(), householdId, email, invitedBy, nowIso()],
+  )
+  return (result.rowCount ?? 0) > 0
 }
 
-export function resolveInvite(inviteId: string, status: Exclude<InviteStatus, 'pending'>): void {
-  const database = getDb()
-  database
-    .prepare(
-      `UPDATE household_invites SET status = ?, resolved_at = ? WHERE id = ? AND status = 'pending'`,
-    )
-    .run(status, nowIso(), inviteId)
+/** Returns false if the invite was no longer pending (e.g. resolved concurrently). */
+export async function resolveInvite(
+  inviteId: string,
+  status: Exclude<InviteStatus, 'pending'>,
+  db: Queryable = getPool(),
+): Promise<boolean> {
+  const result = await db.query(
+    `UPDATE household_invites SET status = $1, resolved_at = $2 WHERE id = $3 AND status = 'pending'`,
+    [status, nowIso(), inviteId],
+  )
+  return (result.rowCount ?? 0) > 0
 }
 
-export function listInvitesForEmail(email: string): InviteSummary[] {
-  const database = getDb()
-  return database
-    .prepare(
-      `SELECT i.id, i.household_id AS householdId, h.name AS householdName, i.email,
-              i.invited_by AS invitedBy, i.status, i.created_at AS createdAt, i.resolved_at AS resolvedAt
-       FROM household_invites i
-       JOIN households h ON h.id = i.household_id
-       WHERE i.email = ? AND i.status = 'pending'
-       ORDER BY i.created_at ASC`,
-    )
-    .all(email) as InviteSummary[]
+export async function listInvitesForEmail(
+  email: string,
+  db: Queryable = getPool(),
+): Promise<InviteSummary[]> {
+  const { rows } = await db.query<InviteSummary>(
+    `SELECT ${INVITE_COLUMNS}
+     FROM household_invites i
+     JOIN households h ON h.id = i.household_id
+     WHERE i.email = $1 AND i.status = 'pending'
+     ORDER BY i.created_at ASC`,
+    [email],
+  )
+  return rows
 }
 
-export function joinHousehold(householdId: string, userSub: string): void {
-  const database = getDb()
-  database
-    .prepare(
-      `INSERT INTO household_members (household_id, user_sub, role, joined_at)
-       VALUES (?, ?, 'member', ?)
-       ON CONFLICT(household_id, user_sub) DO NOTHING`,
-    )
-    .run(householdId, userSub, nowIso())
+export async function joinHousehold(
+  householdId: string,
+  userSub: string,
+  db: Queryable = getPool(),
+): Promise<void> {
+  await db.query(
+    `INSERT INTO household_members (household_id, user_sub, role, joined_at)
+     VALUES ($1, $2, 'member', $3)
+     ON CONFLICT (household_id, user_sub) DO NOTHING`,
+    [householdId, userSub, nowIso()],
+  )
 }
 
 /**
  * Moves the caller's rows from one household into another, de-duplicating products
  * by lowercased name so joining two households doesn't create duplicate products.
  */
-export function migrateHouseholdData(fromHouseholdId: string, toHouseholdId: string): void {
-  const database = getDb()
-
-  const run = database.transaction(() => {
-    const sourceProducts = database
-      .prepare(`SELECT id, name FROM products WHERE household_id = ? AND deleted_at IS NULL`)
-      .all(fromHouseholdId) as Array<{ id: string; name: string }>
-
-    const destProducts = database
-      .prepare(`SELECT id, name FROM products WHERE household_id = ? AND deleted_at IS NULL`)
-      .all(toHouseholdId) as Array<{ id: string; name: string }>
+export async function migrateHouseholdData(
+  fromHouseholdId: string,
+  toHouseholdId: string,
+  db?: Queryable,
+): Promise<void> {
+  await inTransaction(db, async (tx) => {
+    const { rows: sourceProducts } = await tx.query<{ id: string; name: string }>(
+      `SELECT id, name FROM products WHERE household_id = $1 AND deleted_at IS NULL`,
+      [fromHouseholdId],
+    )
+    const { rows: destProducts } = await tx.query<{ id: string; name: string }>(
+      `SELECT id, name FROM products WHERE household_id = $1 AND deleted_at IS NULL`,
+      [toHouseholdId],
+    )
 
     const destByLowerName = new Map(destProducts.map((p) => [p.name.toLowerCase(), p.id]))
     const productIdRemap = new Map<string, string>()
@@ -253,29 +298,29 @@ export function migrateHouseholdData(fromHouseholdId: string, toHouseholdId: str
     }
 
     for (const [oldId] of productIdRemap) {
-      database
-        .prepare(`DELETE FROM products WHERE id = ? AND household_id = ?`)
-        .run(oldId, fromHouseholdId)
+      await tx.query(`DELETE FROM products WHERE id = $1 AND household_id = $2`, [
+        oldId,
+        fromHouseholdId,
+      ])
     }
 
-    database
-      .prepare(`UPDATE products SET household_id = ? WHERE household_id = ?`)
-      .run(toHouseholdId, fromHouseholdId)
+    await tx.query(`UPDATE products SET household_id = $1 WHERE household_id = $2`, [
+      toHouseholdId,
+      fromHouseholdId,
+    ])
 
     for (const table of ['favourites', 'shopping_list', 'stock'] as const) {
-      database
-        .prepare(`UPDATE ${table} SET household_id = ? WHERE household_id = ?`)
-        .run(toHouseholdId, fromHouseholdId)
+      await tx.query(`UPDATE ${table} SET household_id = $1 WHERE household_id = $2`, [
+        toHouseholdId,
+        fromHouseholdId,
+      ])
 
       for (const [oldProductId, newProductId] of productIdRemap) {
-        database
-          .prepare(
-            `UPDATE ${table} SET product_id = ? WHERE product_id = ? AND household_id = ?`,
-          )
-          .run(newProductId, oldProductId, toHouseholdId)
+        await tx.query(
+          `UPDATE ${table} SET product_id = $1 WHERE product_id = $2 AND household_id = $3`,
+          [newProductId, oldProductId, toHouseholdId],
+        )
       }
     }
   })
-
-  run()
 }

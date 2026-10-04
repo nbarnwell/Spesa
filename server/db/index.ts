@@ -1,319 +1,172 @@
-import Database from 'better-sqlite3'
-import fs from 'node:fs'
-import path from 'node:path'
+import pg from 'pg'
 import { config } from '../config.js'
+import { MIGRATIONS } from './migrations.js'
 
-let db: Database.Database | undefined
+const { Pool, types } = pg
 
-export function getDb(): Database.Database {
-  if (!db) {
-    db = openDb(config.dbPath)
-  }
-  return db
+// timestamptz -> ISO-8601 string, so DTOs keep the exact shape clients already see.
+const TIMESTAMPTZ_OID = 1184
+const parseTimestamptz = types.getTypeParser(TIMESTAMPTZ_OID)
+types.setTypeParser(TIMESTAMPTZ_OID, (v) => (parseTimestamptz(v) as Date).toISOString())
+
+const MIGRATION_LOCK_KEY = 5005005
+
+export interface Queryable {
+  query<R extends pg.QueryResultRow = pg.QueryResultRow>(
+    text: string,
+    params?: unknown[],
+  ): Promise<pg.QueryResult<R>>
 }
 
-/** Test-only: closes the singleton so the next getDb() reopens (e.g. against a new config.dbPath). */
-export function closeDbForTests(): void {
-  db?.close()
-  db = undefined
-}
+let pool: pg.Pool | undefined
 
-function openDb(dbPath: string): Database.Database {
-  const dir = path.dirname(dbPath)
-  fs.mkdirSync(dir, { recursive: true })
-  const database = new Database(dbPath)
-  database.pragma('journal_mode = WAL')
-  database.pragma('foreign_keys = ON')
-  migrate(database)
-  return database
-}
+function buildPool(): pg.Pool {
+  let connectionString = config.databaseUrl
+  const options: pg.PoolConfig = { max: config.dbPoolMax }
 
-const CURRENT_SCHEMA_VERSION = 1
-
-function migrate(database: Database.Database): void {
-  const version = database.pragma('user_version', { simple: true }) as number
-
-  if (version >= CURRENT_SCHEMA_VERSION) {
-    createSchemaIfMissing(database)
-    return
+  if (config.databaseCaCert) {
+    // pg lets sslmode in the URL override the ssl option, and sslmode=require verifies
+    // against system CAs, which fails for a private CA. Strip it and pass the CA explicitly.
+    const url = new URL(connectionString)
+    url.searchParams.delete('sslmode')
+    connectionString = url.toString()
+    options.ssl = { ca: config.databaseCaCert, rejectUnauthorized: true }
   }
 
-  const hasLegacyProducts = tableHasColumn(database, 'products', 'user_sub')
-
-  if (!hasLegacyProducts) {
-    createSchemaIfMissing(database)
-    database.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`)
-    return
+  if (config.dbSchema) {
+    options.options = `-c search_path=${config.dbSchema}`
   }
 
-  migrateToHouseholds(database)
-}
-
-function tableHasColumn(database: Database.Database, table: string, column: string): boolean {
-  const rows = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
-  return rows.some((r) => r.name === column)
-}
-
-function createSchemaIfMissing(database: Database.Database): void {
-  database.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-      sub TEXT PRIMARY KEY,
-      email TEXT NOT NULL,
-      name TEXT,
-      picture TEXT,
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS households (
-      id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      created_by TEXT NOT NULL REFERENCES users(sub),
-      created_at TEXT NOT NULL
-    );
-
-    CREATE TABLE IF NOT EXISTS household_members (
-      household_id TEXT NOT NULL REFERENCES households(id),
-      user_sub TEXT NOT NULL REFERENCES users(sub),
-      role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
-      joined_at TEXT NOT NULL,
-      PRIMARY KEY (household_id, user_sub)
-    );
-
-    CREATE TABLE IF NOT EXISTS household_invites (
-      id TEXT PRIMARY KEY,
-      household_id TEXT NOT NULL REFERENCES households(id),
-      email TEXT NOT NULL,
-      invited_by TEXT NOT NULL REFERENCES users(sub),
-      status TEXT NOT NULL CHECK (status IN ('pending','accepted','declined','revoked')),
-      created_at TEXT NOT NULL,
-      resolved_at TEXT
-    );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_invites_pending
-      ON household_invites(household_id, email) WHERE status = 'pending';
-    CREATE INDEX IF NOT EXISTS idx_invites_email ON household_invites(email, status);
-
-    CREATE TABLE IF NOT EXISTS products (
-      id TEXT NOT NULL,
-      household_id TEXT NOT NULL REFERENCES households(id),
-      name TEXT NOT NULL,
-      category TEXT,
-      updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      PRIMARY KEY (id, household_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS favourites (
-      id TEXT NOT NULL,
-      household_id TEXT NOT NULL REFERENCES households(id),
-      product_id TEXT NOT NULL,
-      sort_order INTEGER NOT NULL,
-      updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      PRIMARY KEY (id, household_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS shopping_list (
-      id TEXT NOT NULL,
-      household_id TEXT NOT NULL REFERENCES households(id),
-      product_id TEXT NOT NULL,
-      quantity TEXT,
-      checked INTEGER NOT NULL DEFAULT 0,
-      updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      PRIMARY KEY (id, household_id)
-    );
-
-    CREATE TABLE IF NOT EXISTS stock (
-      id TEXT NOT NULL,
-      household_id TEXT NOT NULL REFERENCES households(id),
-      product_id TEXT NOT NULL,
-      quantity TEXT,
-      status TEXT NOT NULL CHECK (status IN ('in_stock', 'depleted')),
-      updated_at TEXT NOT NULL,
-      deleted_at TEXT,
-      PRIMARY KEY (id, household_id)
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_products_household_updated ON products(household_id, updated_at);
-    CREATE INDEX IF NOT EXISTS idx_favourites_household_updated ON favourites(household_id, updated_at);
-    CREATE INDEX IF NOT EXISTS idx_shopping_household_updated ON shopping_list(household_id, updated_at);
-    CREATE INDEX IF NOT EXISTS idx_stock_household_updated ON stock(household_id, updated_at);
-  `)
-}
-
-interface LegacyTableSpec {
-  table: 'products' | 'favourites' | 'shopping_list' | 'stock'
-  /** Columns (old shape, minus id/user_sub) in insert order, shared by old and new shape. */
-  columns: string[]
-}
-
-const LEGACY_TABLES: LegacyTableSpec[] = [
-  { table: 'products', columns: ['name', 'category', 'updated_at', 'deleted_at'] },
-  { table: 'favourites', columns: ['product_id', 'sort_order', 'updated_at', 'deleted_at'] },
-  { table: 'shopping_list', columns: ['product_id', 'quantity', 'checked', 'updated_at', 'deleted_at'] },
-  { table: 'stock', columns: ['product_id', 'quantity', 'status', 'updated_at', 'deleted_at'] },
-]
-
-function migrateToHouseholds(database: Database.Database): void {
-  // PRAGMA foreign_keys cannot be toggled inside a transaction, and the
-  // drop/rename below would otherwise trip the FK from the legacy tables to users(sub).
-  database.pragma('foreign_keys = OFF')
-
-  const run = database.transaction(() => {
-    database.exec(`
-      CREATE TABLE IF NOT EXISTS households (
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        created_by TEXT NOT NULL REFERENCES users(sub),
-        created_at TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS household_members (
-        household_id TEXT NOT NULL REFERENCES households(id),
-        user_sub TEXT NOT NULL REFERENCES users(sub),
-        role TEXT NOT NULL CHECK (role IN ('owner', 'admin', 'member')),
-        joined_at TEXT NOT NULL,
-        PRIMARY KEY (household_id, user_sub)
-      );
-
-      CREATE TABLE IF NOT EXISTS household_invites (
-        id TEXT PRIMARY KEY,
-        household_id TEXT NOT NULL REFERENCES households(id),
-        email TEXT NOT NULL,
-        invited_by TEXT NOT NULL REFERENCES users(sub),
-        status TEXT NOT NULL CHECK (status IN ('pending','accepted','declined','revoked')),
-        created_at TEXT NOT NULL,
-        resolved_at TEXT
-      );
-      CREATE UNIQUE INDEX IF NOT EXISTS idx_invites_pending
-        ON household_invites(household_id, email) WHERE status = 'pending';
-      CREATE INDEX IF NOT EXISTS idx_invites_email ON household_invites(email, status);
-    `)
-
-    const users = database
-      .prepare(`SELECT sub, email, name FROM users`)
-      .all() as Array<{ sub: string; email: string; name: string | null }>
-
-    for (const user of users) {
-      createPersonalHousehold(database, user.sub, user.name ?? undefined, user.email)
-    }
-
-    for (const spec of LEGACY_TABLES) {
-      rebuildTableForHouseholds(database, spec)
-    }
-
-    database.pragma(`user_version = ${CURRENT_SCHEMA_VERSION}`)
+  const created = new Pool({ ...options, connectionString })
+  created.on('error', (err) => {
+    console.error('Unexpected Postgres pool error', err)
   })
-
-  run()
-  database.pragma('foreign_keys = ON')
+  return created
 }
 
-function rebuildTableForHouseholds(database: Database.Database, spec: LegacyTableSpec): void {
-  const { table, columns } = spec
-  const tmpTable = `${table}_new`
-  const colList = columns.join(', ')
-
-  database.exec(`DROP TABLE IF EXISTS ${tmpTable}`)
-
-  database.exec(`
-    CREATE TABLE ${tmpTable} (
-      id TEXT NOT NULL,
-      household_id TEXT NOT NULL REFERENCES households(id),
-      ${columnDefinitions(table)}
-      PRIMARY KEY (id, household_id)
-    )
-  `)
-
-  database.exec(`
-    INSERT INTO ${tmpTable} (id, household_id, ${colList})
-    SELECT t.id, hm.household_id, ${columns.map((c) => `t.${c}`).join(', ')}
-    FROM ${table} t
-    JOIN household_members hm ON hm.user_sub = t.user_sub
-  `)
-
-  database.exec(`DROP TABLE ${table}`)
-  database.exec(`ALTER TABLE ${tmpTable} RENAME TO ${table}`)
-  database.exec(
-    `CREATE INDEX idx_${table}_household_updated ON ${table}(household_id, updated_at)`,
-  )
+export function getPool(): pg.Pool {
+  pool ??= buildPool()
+  return pool
 }
 
-function columnDefinitions(table: LegacyTableSpec['table']): string {
-  switch (table) {
-    case 'products':
-      return 'name TEXT NOT NULL, category TEXT, updated_at TEXT NOT NULL, deleted_at TEXT,'
-    case 'favourites':
-      return 'product_id TEXT NOT NULL, sort_order INTEGER NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT,'
-    case 'shopping_list':
-      return 'product_id TEXT NOT NULL, quantity TEXT, checked INTEGER NOT NULL DEFAULT 0, updated_at TEXT NOT NULL, deleted_at TEXT,'
-    case 'stock':
-      return "product_id TEXT NOT NULL, quantity TEXT, status TEXT NOT NULL CHECK (status IN ('in_stock', 'depleted')), updated_at TEXT NOT NULL, deleted_at TEXT,"
+export async function closeDb(): Promise<void> {
+  const current = pool
+  pool = undefined
+  await current?.end()
+}
+
+export async function withTransaction<T>(
+  fn: (tx: pg.PoolClient) => Promise<T>,
+  options: { isolation?: 'repeatable read'; readOnly?: boolean } = {},
+): Promise<T> {
+  const client = await getPool().connect()
+  try {
+    const modes: string[] = []
+    if (options.isolation) modes.push(`ISOLATION LEVEL ${options.isolation.toUpperCase()}`)
+    if (options.readOnly) modes.push('READ ONLY')
+    await client.query(modes.length ? `BEGIN ${modes.join(' ')}` : 'BEGIN')
+    const result = await fn(client)
+    await client.query('COMMIT')
+    return result
+  } catch (err) {
+    try {
+      await client.query('ROLLBACK')
+    } catch {
+      // connection is already broken; the original error is the useful one
+    }
+    throw err
+  } finally {
+    client.release()
   }
 }
 
-function createPersonalHousehold(
-  database: Database.Database,
-  sub: string,
-  name: string | undefined,
-  email: string,
-): string {
-  const householdId = crypto.randomUUID()
-  const ts = nowIso()
-  const householdName = name?.trim() || email.split('@')[0] || 'My household'
-
-  database
-    .prepare(`INSERT INTO households (id, name, created_by, created_at) VALUES (?, ?, ?, ?)`)
-    .run(householdId, householdName, sub, ts)
-
-  database
-    .prepare(
-      `INSERT INTO household_members (household_id, user_sub, role, joined_at)
-       VALUES (?, ?, 'owner', ?)`,
+/** Applies pending migrations. Safe to call from several instances at once. */
+export async function initDb(): Promise<void> {
+  await withTransaction(async (tx) => {
+    await tx.query('SELECT pg_advisory_xact_lock($1)', [MIGRATION_LOCK_KEY])
+    await tx.query(
+      `CREATE TABLE IF NOT EXISTS schema_migrations (
+         version INTEGER PRIMARY KEY,
+         name TEXT NOT NULL,
+         applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+       )`,
     )
-    .run(householdId, sub, ts)
+    const { rows } = await tx.query<{ v: number }>(
+      'SELECT COALESCE(MAX(version), 0)::int AS v FROM schema_migrations',
+    )
+    const current = rows[0].v
 
-  return householdId
-}
-
-/** Creates a personal household for a user with no membership yet. No-op otherwise. */
-export function ensureUserHousehold(sub: string, name: string | undefined, email: string): void {
-  const database = getDb()
-  const existing = database
-    .prepare(`SELECT 1 FROM household_members WHERE user_sub = ? LIMIT 1`)
-    .get(sub)
-  if (existing) return
-
-  createPersonalHousehold(database, sub, name, email)
+    for (const migration of MIGRATIONS) {
+      if (migration.version <= current) continue
+      await tx.query(migration.sql)
+      await tx.query('INSERT INTO schema_migrations (version, name) VALUES ($1, $2)', [
+        migration.version,
+        migration.name,
+      ])
+    }
+  })
 }
 
 export function nowIso(): string {
   return new Date().toISOString()
 }
 
-export function upsertUser(user: {
+async function createPersonalHousehold(
+  db: Queryable,
+  sub: string,
+  name: string | undefined,
+  email: string,
+): Promise<string> {
+  const householdId = crypto.randomUUID()
+  const ts = nowIso()
+  const householdName = name?.trim() || email.split('@')[0] || 'My household'
+
+  await db.query(
+    `INSERT INTO households (id, name, created_by, created_at) VALUES ($1, $2, $3, $4)`,
+    [householdId, householdName, sub, ts],
+  )
+  await db.query(
+    `INSERT INTO household_members (household_id, user_sub, role, joined_at)
+     VALUES ($1, $2, 'owner', $3)`,
+    [householdId, sub, ts],
+  )
+
+  return householdId
+}
+
+/** Creates a personal household for a user with no membership yet. No-op otherwise. */
+export async function ensureUserHousehold(
+  sub: string,
+  name: string | undefined,
+  email: string,
+  db: Queryable = getPool(),
+): Promise<void> {
+  const existing = await db.query(`SELECT 1 FROM household_members WHERE user_sub = $1 LIMIT 1`, [
+    sub,
+  ])
+  if (existing.rowCount) return
+
+  await createPersonalHousehold(db, sub, name, email)
+}
+
+export async function upsertUser(user: {
   sub: string
   email: string
   name?: string
   picture?: string
-}): void {
-  const database = getDb()
-  database
-    .prepare(
+}): Promise<void> {
+  // The user upsert comes first: it row-locks the user until commit, so concurrent
+  // first-time requests queue here and the later ones see the committed membership.
+  await withTransaction(async (tx) => {
+    await tx.query(
       `INSERT INTO users (sub, email, name, picture, created_at)
-       VALUES (@sub, @email, @name, @picture, @createdAt)
-       ON CONFLICT(sub) DO UPDATE SET
-         email = excluded.email,
-         name = excluded.name,
-         picture = excluded.picture`,
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (sub) DO UPDATE SET
+         email = EXCLUDED.email,
+         name = EXCLUDED.name,
+         picture = EXCLUDED.picture`,
+      [user.sub, user.email, user.name ?? null, user.picture ?? null, nowIso()],
     )
-    .run({
-      sub: user.sub,
-      email: user.email,
-      name: user.name ?? null,
-      picture: user.picture ?? null,
-      createdAt: nowIso(),
-    })
-
-  ensureUserHousehold(user.sub, user.name, user.email)
+    await ensureUserHousehold(user.sub, user.name, user.email, tx)
+  })
 }

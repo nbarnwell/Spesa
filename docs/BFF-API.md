@@ -204,7 +204,7 @@ Returns `{ "moved": 3 }`.
 Any HTTP framework works. Minimum requirements:
 
 - OIDC token validation (Google JWKS)
-- Persistent store (Postgres, SQLite, etc.)
+- Persistent store (the reference server uses Postgres)
 - CORS allowing the PWA origin
 - HTTPS in production (required for service workers on non-localhost)
 

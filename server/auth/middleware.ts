@@ -23,19 +23,19 @@ export async function requireAuth(
     return
   }
 
-  upsertUser(user)
+  await upsertUser(user)
   req.user = user
 
   const headerValue = req.headers['x-household-id']
   const requestedHouseholdId = typeof headerValue === 'string' ? headerValue : undefined
-  const householdId = requestedHouseholdId ?? getDefaultHouseholdId(user.sub)
+  const householdId = requestedHouseholdId ?? (await getDefaultHouseholdId(user.sub))
 
   if (!householdId) {
     res.status(403).json({ error: 'No household membership' })
     return
   }
 
-  const membership = getMembership(householdId, user.sub)
+  const membership = await getMembership(householdId, user.sub)
   if (!membership) {
     res.status(403).json({ error: 'Not a member of this household' })
     return
@@ -52,9 +52,9 @@ export async function requireAuth(
  * from the one a management route is targeting.
  */
 export function requireRole(...roles: HouseholdRole[]) {
-  return (req: Request, res: Response, next: NextFunction): void => {
+  return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     const householdId = req.params.id as string | undefined
-    const membership = householdId ? getMembership(householdId, req.user!.sub) : undefined
+    const membership = householdId ? await getMembership(householdId, req.user!.sub) : undefined
     if (!membership) {
       res.status(404).json({ error: 'Household not found' })
       return

@@ -1,0 +1,20 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: spesa
+      POSTGRES_PASSWORD: spesa
+      POSTGRES_DB: spesa
+    ports:
+      - '${SPESA_PG_PORT:-5432}:5432'
+    volumes:
+      - spesa-pgdata:/var/lib/postgresql/data
+      - ./docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U spesa -d spesa']
+      interval: 2s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  spesa-pgdata:

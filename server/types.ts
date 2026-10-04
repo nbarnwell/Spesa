@@ -57,7 +57,7 @@ export interface ShoppingListRow {
   householdId: string
   productId: string
   quantity: string | null
-  checked: number
+  checked: boolean
   updatedAt: string
   deletedAt: string | null
 }
@@ -134,6 +134,8 @@ export interface SyncPushResponse {
 }
 
 declare global {
+  // Declaration merging with Express's Request type can only be done via a namespace.
+  // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace Express {
     interface Request {
       user?: UserProfile

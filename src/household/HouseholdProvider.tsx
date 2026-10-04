@@ -108,6 +108,8 @@ export function HouseholdProvider({ children }: { children: ReactNode }) {
   return <HouseholdContext.Provider value={value}>{children}</HouseholdContext.Provider>
 }
 
+// Hook intentionally colocated with its provider.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useHousehold(): HouseholdContextValue {
   const ctx = useContext(HouseholdContext)
   if (!ctx) throw new Error('useHousehold must be used within HouseholdProvider')

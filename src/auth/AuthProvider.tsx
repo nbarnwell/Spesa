@@ -61,7 +61,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
           await completeSignIn()
           window.history.replaceState({}, '', '/')
-        } catch {
+        } catch (err) {
+          console.error('Sign-in callback failed', err)
           window.history.replaceState({}, '', '/')
         }
       }
@@ -157,6 +158,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
 }
 
+// Hook intentionally colocated with its provider.
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAuth(): AuthContextValue {
   const ctx = useContext(AuthContext)
   if (!ctx) throw new Error('useAuth must be used within AuthProvider')

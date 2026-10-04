@@ -1,10 +1,7 @@
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Request, Response } from 'express'
-import { config } from '../config.js'
-import { closeDbForTests, upsertUser } from '../db/index.js'
+import { setupTestDb, teardownTestDb } from '../test/db.js'
+import { upsertUser } from '../db/index.js'
 import { getDefaultHouseholdId } from '../services/households.js'
 
 vi.mock('./google.js', async () => {
@@ -27,21 +24,19 @@ function createMockResponse(): Response {
 }
 
 describe('requireAuth household boundary', () => {
-  beforeEach(() => {
-    const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'spesa-auth-')), 'test.db')
-    config.dbPath = dbPath
-    closeDbForTests()
+  beforeEach(async () => {
+    await setupTestDb()
     vi.mocked(authenticateBearerToken).mockReset()
   })
 
-  afterEach(() => {
-    closeDbForTests()
+  afterEach(async () => {
+    await teardownTestDb()
   })
 
   it('responds 403 when the caller is not a member of the requested household', async () => {
-    upsertUser({ sub: 'user-a', email: 'a@example.com' })
-    upsertUser({ sub: 'user-b', email: 'b@example.com' })
-    const householdB = getDefaultHouseholdId('user-b')!
+    await upsertUser({ sub: 'user-a', email: 'a@example.com' })
+    await upsertUser({ sub: 'user-b', email: 'b@example.com' })
+    const householdB = (await getDefaultHouseholdId('user-b'))!
 
     vi.mocked(authenticateBearerToken).mockResolvedValue({
       sub: 'user-a',
@@ -62,8 +57,8 @@ describe('requireAuth household boundary', () => {
   })
 
   it('allows the caller into their own household and sets req.householdId/Role', async () => {
-    upsertUser({ sub: 'user-a', email: 'a@example.com' })
-    const householdA = getDefaultHouseholdId('user-a')!
+    await upsertUser({ sub: 'user-a', email: 'a@example.com' })
+    const householdA = (await getDefaultHouseholdId('user-a'))!
 
     vi.mocked(authenticateBearerToken).mockResolvedValue({
       sub: 'user-a',

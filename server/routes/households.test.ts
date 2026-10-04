@@ -1,10 +1,6 @@
 import http from 'node:http'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { config } from '../config.js'
-import { closeDbForTests } from '../db/index.js'
+import { setupTestDb, teardownTestDb } from '../test/db.js'
 
 vi.mock('../auth/google.js', async () => {
   const actual = await vi.importActual<typeof import('../auth/google.js')>('../auth/google.js')
@@ -70,9 +66,7 @@ function authFetch(
 }
 
 beforeEach(async () => {
-  const dbPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'spesa-households-')), 'test.db')
-  config.dbPath = dbPath
-  closeDbForTests()
+  await setupTestDb()
   profiles.clear()
 
   vi.mocked(authenticateBearerToken).mockReset()
@@ -93,7 +87,7 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await new Promise((resolve) => server.close(resolve))
-  closeDbForTests()
+  await teardownTestDb()
 })
 
 describe('household invite lifecycle and role rules', () => {
@@ -235,5 +229,95 @@ describe('household invite lifecycle and role rules', () => {
       await authFetch('/api/products', 'owner-token', { householdId: newHousehold.id }),
     )
     expect(productsInNew.map((p) => p.name)).toEqual(['Milk'])
+  })
+})
+
+describe('API behaviour that moved into single SQL statements', () => {
+  it('rejects a sync push with an unparseable updatedAt', async () => {
+    registerUser('owner-token', { sub: 'owner', email: 'owner@example.com', emailVerified: true })
+
+    const res = await authFetch('/api/sync', 'owner-token', {
+      method: 'POST',
+      body: JSON.stringify({
+        products: [{ id: 'p1', name: 'Milk', updatedAt: 'not-a-date' }],
+        favourites: [],
+        shoppingList: [],
+        stock: [],
+      }),
+    })
+    expect(res.status).toBe(400)
+  })
+
+  it('toggling checked keeps the existing quantity', async () => {
+    registerUser('owner-token', { sub: 'owner', email: 'owner@example.com', emailVerified: true })
+
+    const product = await readJson<{ id: string }>(
+      await authFetch('/api/products', 'owner-token', {
+        method: 'POST',
+        body: JSON.stringify({ name: 'Milk' }),
+      }),
+    )
+    const item = await readJson<{ id: string }>(
+      await authFetch('/api/shopping-list', 'owner-token', {
+        method: 'POST',
+        body: JSON.stringify({ productId: product.id, quantity: '2' }),
+      }),
+    )
+
+    const patched = await readJson<{ checked: boolean; quantity?: string }>(
+      await authFetch(`/api/shopping-list/${item.id}`, 'owner-token', {
+        method: 'PATCH',
+        body: JSON.stringify({ checked: true }),
+      }),
+    )
+    expect(patched).toMatchObject({ checked: true, quantity: '2' })
+
+    const missing = await authFetch('/api/shopping-list/nope', 'owner-token', {
+      method: 'PATCH',
+      body: JSON.stringify({ checked: true }),
+    })
+    expect(missing.status).toBe(404)
+  })
+
+  it('assigns increasing sortOrder to new favourites', async () => {
+    registerUser('owner-token', { sub: 'owner', email: 'owner@example.com', emailVerified: true })
+
+    const orders: number[] = []
+    for (const name of ['Milk', 'Eggs']) {
+      const product = await readJson<{ id: string }>(
+        await authFetch('/api/products', 'owner-token', {
+          method: 'POST',
+          body: JSON.stringify({ name }),
+        }),
+      )
+      const fav = await readJson<{ sortOrder: number }>(
+        await authFetch('/api/favourites', 'owner-token', {
+          method: 'POST',
+          body: JSON.stringify({ productId: product.id }),
+        }),
+      )
+      orders.push(fav.sortOrder)
+    }
+    expect(orders).toEqual([0, 1])
+  })
+
+  it('keeps one pending invite when the same email is invited twice', async () => {
+    registerUser('owner-token', { sub: 'owner', email: 'owner@example.com', emailVerified: true })
+
+    const ownerMe = await readJson<MeResponse>(await authFetch('/api/me', 'owner-token'))
+    const householdId = ownerMe.activeHouseholdId
+
+    for (let i = 0; i < 2; i++) {
+      const res = await authFetch(`/api/households/${householdId}/invites`, 'owner-token', {
+        method: 'POST',
+        body: JSON.stringify({ email: 'member@example.com' }),
+      })
+      expect(res.status).toBe(201)
+    }
+
+    const pending = await readJson<InviteResponse[]>(
+      await authFetch(`/api/households/${householdId}/invites`, 'owner-token'),
+    )
+    expect(pending).toHaveLength(1)
   })
 })
