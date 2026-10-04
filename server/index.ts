@@ -1,11 +1,9 @@
 import { createApp, attachFrontend } from './app.js'
-import { config } from './config.js'
+import { assertProductionConfig, config } from './config.js'
 import { closeDb, initDb } from './db/index.js'
 
 async function main(): Promise<void> {
-  if (config.isProduction && !process.env.DATABASE_URL) {
-    throw new Error('DATABASE_URL must be set in production')
-  }
+  assertProductionConfig()
 
   await initDb()
 

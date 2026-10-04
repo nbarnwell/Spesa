@@ -13,7 +13,7 @@ An offline-first grocery shopping PWA. Manage a shopping list, track pantry stoc
 ## Tech stack
 
 - **Client:** React 19, Vite, TypeScript, Dexie (IndexedDB), `vite-plugin-pwa`
-- **Auth:** Google OAuth 2.0 / OpenID Connect (`oidc-client-ts`), authorization code + PKCE
+- **Auth:** Google OAuth 2.0 / OpenID Connect (`oidc-client-ts`), authorization code + PKCE (the code is exchanged by the BFF, which holds the client secret)
 - **Server (BFF):** Express, Postgres (`pg`), `jose` for token validation
 
 ## Getting started
@@ -22,7 +22,9 @@ An offline-first grocery shopping PWA. Manage a shopping list, track pantry stoc
 
 - Node.js
 - Docker (runs the local Postgres used for development and tests)
-- A Google OAuth 2.0 **Web application** client (Google Cloud Console) with an authorized JavaScript origin and redirect URI for local dev
+- A Google OAuth 2.0 **Web application** client (Google Cloud Console) with an authorized JavaScript origin and redirect URI for local dev. The origin and redirect URI must match **exactly** (scheme, host, port, path, no trailing slash). The client secret comes from the same OAuth client.
+
+A Google OAuth consent screen left in **Testing** status issues refresh tokens that expire after 7 days, so users must sign in again weekly until the app is published.
 
 ### Setup
 
@@ -37,6 +39,7 @@ Fill in `.env`:
 ```
 VITE_OIDC_CLIENT_ID=your-google-client-id.apps.googleusercontent.com
 VITE_OIDC_REDIRECT_URI=http://localhost:5174/auth/callback
+GOOGLE_CLIENT_SECRET=your-google-client-secret
 PORT=5174
 DATABASE_URL=postgres://spesa:spesa@localhost:5432/spesa   # optional; this is the default
 ```
@@ -70,7 +73,7 @@ npm run lint
 npm test
 ```
 
-Runs the server-side test suite (`vitest`): schema migrations, sync merge and concurrency behaviour, the request-pipeline authorization boundary, and the household/invite endpoints.
+Runs the server-side test suite (`vitest`): schema migrations, sync merge and concurrency behaviour, the request-pipeline authorization boundary, the household/invite endpoints, and the OAuth token endpoint.
 
 Tests need the Postgres container (`npm run db:up`) and use the `spesa_test` database (override with `TEST_DATABASE_URL`). Each test gets its own throwaway schema, so test files can run in parallel. If port 5432 is already in use on your machine, start the container on another port with `SPESA_PG_PORT=5433 npm run db:up` and point `DATABASE_URL` / `TEST_DATABASE_URL` at it.
 
@@ -108,6 +111,9 @@ Spesa is one Node service (the Express server also serves the built PWA) plus a 
 2. Set these environment variables:
    - `NODE_ENV=production`; `PORT` if your host doesn't inject it
    - `VITE_OIDC_CLIENT_ID` and `VITE_OIDC_REDIRECT_URI` — Vite bakes these in at **build** time, so they must be set during the build, not just at runtime. The server also reads the client ID at runtime.
+   - `GOOGLE_CLIENT_SECRET` — **runtime only**, required in production (the server refuses to start without it). Never expose it to the build as a `VITE_` variable. If `VITE_OIDC_REDIRECT_URI` is also present at runtime, the server enforces it on code exchange.
+   - `TRUST_PROXY` (optional) — number of reverse-proxy hops in front of the app, so the token-endpoint rate limit sees real client IPs
+   - `AUTH_RATE_LIMIT_PER_MINUTE` (optional, default 30) — per-IP, per-instance limit on `POST /auth/token`
    - `DATABASE_URL` — required in production; the server refuses to start without it
    - `DATABASE_CA_CERT` (optional) — PEM CA certificate, only for databases served with a private CA. When set, the server drops any `sslmode` from the URL and verifies the connection against this CA. Leave it unset for databases reached over a private network or with a publicly trusted certificate.
    - `DB_POOL_MAX` (optional, default 10) — keep `instances × DB_POOL_MAX` under the database's connection limit.

@@ -5,7 +5,7 @@ Backend-for-frontend contract for the Spesa PWA. The client works fully offline 
 ## Authentication
 
 - **Provider:** Google OpenID Connect
-- **Client:** SPA uses authorization code + PKCE (`oidc-client-ts`)
+- **Client:** SPA uses authorization code + PKCE (`oidc-client-ts`). The BFF performs the code and refresh-token exchanges (`POST /auth/token`) because Google Web clients require a client secret. The SPA sends the Google **access token** as the bearer.
 - **BFF responsibility:** Validate the `Authorization: Bearer <token>` header on every request
 
 Recommended approach:
@@ -13,6 +13,31 @@ Recommended approach:
 1. Accept Google **access token** or **ID token** from the SPA
 2. Verify signature, `aud`, `iss`, and expiry
 3. Map `sub` to an internal user id, then resolve household membership (see below)
+
+### `POST /auth/token`
+
+Unauthenticated OAuth token proxy. Adds `client_id` and `client_secret` server-side and forwards to Google's token endpoint; Google's status and JSON body are returned unchanged.
+
+Request: `application/x-www-form-urlencoded`. Only these fields are forwarded:
+
+| `grant_type` | Required fields |
+|--------------|-----------------|
+| `authorization_code` | `code`, `code_verifier`, `redirect_uri` |
+| `refresh_token` | `refresh_token` |
+
+A supplied `client_id` must match the server's client ID. If `VITE_OIDC_REDIRECT_URI` is set in the server environment, `redirect_uri` must equal it exactly.
+
+| Status | `error` | Cause |
+|--------|---------|-------|
+| 400 | `invalid_request` | Missing field, wrong content type, `redirect_uri` mismatch |
+| 400 | `unsupported_grant_type` | Any other grant type |
+| 400 | `invalid_client` | `client_id` differs from the server's |
+| 400 | `invalid_grant` etc. | Google's own error, passed through |
+| 429 | `rate_limited` | Per-IP limit exceeded (`Retry-After` set) |
+| 500 | `server_error` | Client ID/secret not configured |
+| 502 | `temporarily_unavailable` | Google unreachable or returned a non-JSON response |
+
+Sessions renew with the refresh grant. When the stored refresh token is missing or rejected (`invalid_grant`) the client clears the session and the user signs in again; offline or transient failures keep the session and retry.
 
 ### `GET /api/me`
 
@@ -215,9 +240,12 @@ Copy `.env.example` to `.env`:
 ```
 VITE_OIDC_CLIENT_ID=...
 VITE_OIDC_REDIRECT_URI=http://localhost:5174/auth/callback
+GOOGLE_CLIENT_SECRET=...   # server only, never VITE_-prefixed
 PORT=5174
 ```
 
 When the BFF is served from the same origin as the PWA (default Spesa setup), leave `VITE_BFF_BASE_URL` unset — the client calls `/api/*` as relative paths.
 
-Google Cloud Console: create an OAuth 2.0 **Web application** client, add authorized JavaScript origins and redirect URI.
+Google Cloud Console: create an OAuth 2.0 **Web application** client, add authorized JavaScript origins and redirect URI (they must match exactly, including scheme, port and path), and copy the client secret into `GOOGLE_CLIENT_SECRET`.
+
+A split deploy (`VITE_BFF_BASE_URL`) additionally needs CORS on the BFF for `/auth/token`; the reference server does not implement it.

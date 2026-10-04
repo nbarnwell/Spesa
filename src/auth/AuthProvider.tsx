@@ -9,7 +9,14 @@ import {
   type ReactNode,
 } from 'react'
 import type { User } from 'oidc-client-ts'
-import { completeSignIn, isOidcConfigured, signIn, signOut, userManager } from './oidc'
+import {
+  completeSignIn,
+  isOidcConfigured,
+  renewSession,
+  signIn,
+  signOut,
+  userManager,
+} from './oidc'
 import { fullSync } from '../api/sync'
 import { subscribeDataChanged } from '../hooks/useAsyncData'
 
@@ -73,6 +80,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setIsLoading(false)
         if (current && !current.expired) {
           void syncAfterLogin(current)
+        } else if (current) {
+          // The library's silent-renew timer never fires for an already-expired token.
+          void renewSession().catch(() => {})
         }
       }
     }
@@ -96,14 +106,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [configured, syncAfterLogin])
 
   useEffect(() => {
-    if (!user?.access_token || user.expired) return
+    if (!user) return
 
     const runSync = () => {
       // Read the ref, not the closed-over `user`, so a token refreshed via
       // automaticSilentRenew doesn't leave the interval/visibility handlers
       // syncing with a stale (possibly expired) access token.
       const current = userRef.current
-      if (!current?.access_token || current.expired) return
+      if (!current) return
+      if (current.expired) {
+        // Renewal raises userLoaded, which runs syncAfterLogin.
+        if (navigator.onLine) void renewSession().catch(() => {})
+        return
+      }
+      if (!current.access_token) return
       if (document.hidden || !navigator.onLine) return
       if (syncInFlightRef.current) return
 
@@ -128,12 +144,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!document.hidden) runSync()
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('online', runSync)
 
     return () => {
       unsubscribe()
       if (debounceTimer) clearTimeout(debounceTimer)
       clearInterval(pollInterval)
       document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('online', runSync)
     }
   }, [user])
 

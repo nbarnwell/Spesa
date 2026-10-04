@@ -107,3 +107,27 @@ export function extractBearerToken(header: string | undefined): string | null {
   const token = header.slice('Bearer '.length).trim()
   return token || null
 }
+
+export interface GoogleTokenResult {
+  status: number
+  body: unknown
+}
+
+/** POSTs a prepared form to Google's token endpoint. Callers add client credentials. */
+export async function exchangeGoogleToken(params: URLSearchParams): Promise<GoogleTokenResult> {
+  const res = await fetch('https://oauth2.googleapis.com/token', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: params,
+    signal: AbortSignal.timeout(10_000),
+  })
+
+  const text = await res.text()
+  let body: unknown
+  try {
+    body = JSON.parse(text)
+  } catch {
+    throw new Error('Google token endpoint returned a non-JSON response')
+  }
+  return { status: res.status, body }
+}

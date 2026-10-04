@@ -1,7 +1,7 @@
 /**
  * BFF API contract — implement these endpoints on your backend.
  * All authenticated routes expect: Authorization: Bearer <access_token>
- * (Google OIDC access token or a BFF-issued JWT after token exchange).
+ * (the Google OAuth access token obtained via the code exchange at /auth/token).
  * Data routes also expect: X-Household-Id: <household id> (defaults to the
  * caller's first household membership when omitted).
  */
@@ -110,6 +110,9 @@ export interface SyncPushResponse {
 export const BFF_ROUTES = {
   /** GET — returns UserProfile (with households + activeHouseholdId) from validated OIDC token */
   me: '/api/me',
+
+  /** POST form-encoded — OAuth token proxy (authorization_code, refresh_token); unauthenticated */
+  authToken: '/auth/token',
 
   /** GET ?since=<iso> — incremental sync pull */
   syncPull: '/api/sync',
